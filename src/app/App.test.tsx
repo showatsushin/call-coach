@@ -1,7 +1,22 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import App from "./App";
+import { SpeechInputError, type SpeechInputProvider, type SpeechOutputProvider } from "../audio/speech";
+
+class InputMock implements SpeechInputProvider {
+  constructor(private readonly text = "お名前と注文番号を確認します", private readonly error?: SpeechInputError) {}
+  isSupported() { return true; }
+  startListening = vi.fn(async () => { if (this.error) throw this.error; });
+  stopListening = vi.fn(async () => this.text);
+  cancel = vi.fn();
+}
+class OutputMock implements SpeechOutputProvider {
+  spoken: string[] = [];
+  isSupported() { return true; }
+  speak = vi.fn(async (text: string) => { this.spoken.push(text); });
+  stop = vi.fn();
+}
 
 describe("CallCoach vertical slice", () => {
   it("EMPTY状態からサンプルシナリオを選択できる", async () => {
@@ -63,5 +78,62 @@ describe("CallCoach vertical slice", () => {
     expect(screen.getByText("共通の弱点")).toBeInTheDocument();
     expect(screen.getByText("配達遅延時の状況確認")).toBeInTheDocument();
     expect(screen.getByText(/架空スタッフのMock/)).toBeInTheDocument();
+  });
+
+  it("音声認識結果を即送信せずテキスト欄へ反映する", async () => {
+    const user = userEvent.setup(); const inputProvider = new InputMock(); const outputProvider = new OutputMock();
+    render(<App speechInputProvider={inputProvider} speechOutputProvider={outputProvider} />);
+    await user.click(screen.getByRole("button", { name: /サンプル環境で試す/ }));
+    await user.click(screen.getByRole("button", { name: /研修準備へ/ }));
+    await user.click(screen.getByRole("button", { name: /トレーニングを開始/ }));
+    await user.click(screen.getByRole("button", { name: "🎙 話す" }));
+    await user.click(screen.getByRole("button", { name: "音声練習を始める" }));
+    await user.click(screen.getByRole("button", { name: "■ 話し終わる" }));
+    const textarea = screen.getByLabelText("受講者の回答");
+    expect(textarea).toHaveValue("お名前と注文番号を確認します");
+    expect(screen.queryByText("お名前と注文番号を確認します", { selector: ".message p" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "送信" }));
+    expect(screen.getByText("お名前と注文番号を確認します")).toBeInTheDocument();
+  });
+
+  it("音声非対応環境でもテキスト練習を継続できる", async () => {
+    const user = userEvent.setup(); render(<App />);
+    await user.click(screen.getByRole("button", { name: /サンプル環境で試す/ }));
+    await user.click(screen.getByRole("button", { name: /研修準備へ/ }));
+    await user.click(screen.getByRole("button", { name: /トレーニングを開始/ }));
+    expect(screen.getByText(/このブラウザでは音声入力を利用できません/)).toBeInTheDocument();
+    await user.type(screen.getByLabelText("受講者の回答"), "テキストで確認します");
+    await user.click(screen.getByRole("button", { name: "送信" }));
+    expect(screen.getByText("テキストで確認します")).toBeInTheDocument();
+  });
+
+  it("permission deniedを表示してテキスト入力を維持する", async () => {
+    const user = userEvent.setup();
+    render(<App speechInputProvider={new InputMock("", new SpeechInputError("permission_denied"))} speechOutputProvider={new OutputMock()} />);
+    await user.click(screen.getByRole("button", { name: /サンプル環境で試す/ }));
+    await user.click(screen.getByRole("button", { name: /研修準備へ/ }));
+    await user.click(screen.getByRole("button", { name: /トレーニングを開始/ }));
+    await user.click(screen.getByRole("button", { name: "🎙 話す" }));
+    await user.click(screen.getByRole("button", { name: "音声練習を始める" }));
+    expect(await screen.findByText(/マイクの使用が許可されていません/)).toBeInTheDocument();
+    expect(screen.getByLabelText("受講者の回答")).toBeEnabled();
+  });
+
+  it("顧客発話の再生・音声OFF・もう一度聞く・停止を制御する", async () => {
+    const user = userEvent.setup(); const output = new OutputMock();
+    render(<App speechInputProvider={new InputMock()} speechOutputProvider={output} />);
+    await user.click(screen.getByRole("button", { name: /サンプル環境で試す/ }));
+    await user.click(screen.getByRole("button", { name: /研修準備へ/ }));
+    await user.click(screen.getByRole("button", { name: /トレーニングを開始/ }));
+    expect(output.speak).toHaveBeenCalled();
+    const initialCount = output.speak.mock.calls.length;
+    await user.click(screen.getByRole("button", { name: /もう一度聞く/ }));
+    expect(output.speak.mock.calls.length).toBeGreaterThan(initialCount);
+    await user.click(screen.getByRole("button", { name: /再生停止/ }));
+    expect(output.stop).toHaveBeenCalled();
+    await user.click(screen.getByRole("checkbox", { name: "顧客音声" }));
+    const disabledCount = output.speak.mock.calls.length;
+    expect(screen.getByRole("button", { name: /もう一度聞く/ })).toBeDisabled();
+    expect(output.speak.mock.calls.length).toBe(disabledCount);
   });
 });

@@ -7,9 +7,15 @@ import { summarizeAttempts } from "../domain/dashboard";
 import { MockCustomerRoleplayProvider } from "../providers/MockCustomerRoleplayProvider";
 import { MockTrainingContentProvider } from "../providers/MockTrainingContentProvider";
 import type { AuthoringDraft, ConversationActionType, CustomerState } from "../domain/models";
+import type { SpeechInputProvider, SpeechOutputProvider } from "../audio/speech";
+import { BrowserSpeechInputProvider } from "../audio/BrowserSpeechInputProvider";
+import { BrowserSpeechOutputProvider } from "../audio/BrowserSpeechOutputProvider";
+import { useSpeechTraining } from "../hooks/useSpeechTraining";
 
 const contentProvider = new MockTrainingContentProvider();
 const roleplayProvider = new MockCustomerRoleplayProvider();
+const browserSpeechInput = new BrowserSpeechInputProvider();
+const browserSpeechOutput = new BrowserSpeechOutputProvider();
 const personas: CustomerPersona[] = ["normal", "hurried", "angry", "elderly", "unclear"];
 const difficulties: Difficulty[] = ["beginner", "intermediate", "advanced"];
 const styles: CommunicationStyle[] = ["direct", "expressive", "supportive", "analytical"];
@@ -17,7 +23,9 @@ type View = "home" | "prepare" | "training" | "result" | "growth" | "authoring" 
 
 const uid = () => globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
 
-export default function App() {
+type AppProps = { speechInputProvider?: SpeechInputProvider; speechOutputProvider?: SpeechOutputProvider };
+
+export default function App({ speechInputProvider = browserSpeechInput, speechOutputProvider = browserSpeechOutput }: AppProps = {}) {
   const [loaded, setLoaded] = useState(false);
   const [scenario, setScenario] = useState<TrainingScenario>();
   const [persona, setPersona] = useState<CustomerPersona>("normal");
@@ -105,7 +113,7 @@ export default function App() {
          </aside>
          <section className={`panel training-panel ${view === "training" || view === "prepare" ? "mobile-current" : ""}`}>
            {!scenario ? <Welcome /> : messages.length && view === "training"
-             ? <Training scenario={scenario} messages={messages} input={input} setInput={setInput} onAction={act} onFinish={finish} customerState={customerState} hintsOn={hintsOn} setHintsOn={setHintsOn} persona={persona} difficulty={difficulty} style={style} />
+             ? <Training scenario={scenario} messages={messages} input={input} setInput={setInput} onAction={act} onFinish={finish} customerState={customerState} hintsOn={hintsOn} setHintsOn={setHintsOn} persona={persona} difficulty={difficulty} style={style} speechInputProvider={speechInputProvider} speechOutputProvider={speechOutputProvider} />
              : <Setup scenario={scenario} persona={persona} difficulty={difficulty} style={style} setPersona={setPersona} setDifficulty={setDifficulty} setStyle={setStyle} onStart={start} />}
          </section>
          <aside className="panel guide-panel"><Guide scenario={scenario} messages={messages} /></aside>
@@ -157,17 +165,23 @@ function Setup({ scenario, persona, difficulty, style, setPersona, setDifficulty
   </div>;
 }
 
-function Training({ scenario, messages, input, setInput, onAction, onFinish, customerState, hintsOn, setHintsOn, persona, difficulty, style }: { scenario: TrainingScenario; messages: ConversationMessage[]; input: string; setInput: (v: string) => void; onAction: (type: ConversationActionType, text?: string) => void; onFinish: () => void; customerState: CustomerState; hintsOn: boolean; setHintsOn: (v: boolean) => void; persona: CustomerPersona; difficulty: Difficulty; style: CommunicationStyle }) {
+function Training({ scenario, messages, input, setInput, onAction, onFinish, customerState, hintsOn, setHintsOn, persona, difficulty, style, speechInputProvider, speechOutputProvider }: { scenario: TrainingScenario; messages: ConversationMessage[]; input: string; setInput: (v: string) => void; onAction: (type: ConversationActionType, text?: string) => void; onFinish: () => void; customerState: CustomerState; hintsOn: boolean; setHintsOn: (v: boolean) => void; persona: CustomerPersona; difficulty: Difficulty; style: CommunicationStyle; speechInputProvider: SpeechInputProvider; speechOutputProvider: SpeechOutputProvider }) {
   const turns = messages.filter((m) => m.speaker === "trainee").length;
+  const speech = useSpeechTraining(messages, setInput, speechInputProvider, speechOutputProvider);
+  const send = () => { onAction("speak"); speech.resetStatus(); };
   return <div className="training">
-    <div className="training-head"><div><p className="eyebrow">LIVE PRACTICE · TURN {turns}</p><h2>{scenario.title}</h2><small>{difficultyLabels[difficulty]}・{personaLabels[persona]}・{styleLabels[style].slice(0, 3)}</small></div><div className="state-pills"><span>{customerState.emotion}</span><span>信頼 {customerState.trust}</span><button onClick={() => setHintsOn(!hintsOn)}>ヒント {hintsOn ? "ON" : "OFF"}</button></div></div>
+    <div className="training-head"><div><p className="eyebrow">LIVE PRACTICE · TURN {turns}</p><h2>{scenario.title}</h2><small>{difficultyLabels[difficulty]}・{personaLabels[persona]}・{styleLabels[style].slice(0, 3)}</small></div><div className="state-pills"><span>{customerState.emotion}</span><span>信頼 {customerState.trust}</span><span className={speech.audioEnabled ? "voice-on" : ""}>音声練習 {speech.audioEnabled ? "ON" : "OFF"}</span><button onClick={() => setHintsOn(!hintsOn)}>ヒント {hintsOn ? "ON" : "OFF"}</button></div></div>
     <div className="demo-label">デモ用ルールベース顧客シミュレーター</div>
     <div className="state-reason">顧客状態：{customerState.explanation}</div>
+    <div className="speech-toolbar"><label><input type="checkbox" checked={speech.audioEnabled} onChange={(event) => speech.setAudioEnabled(event.target.checked)} /> 顧客音声</label><button onClick={speech.repeatCustomer} disabled={!speech.outputSupported || !speech.audioEnabled}>↻ もう一度聞く</button><button onClick={speech.stopSpeaking} disabled={!speech.outputSupported}>■ 再生停止</button>{!speech.outputSupported && <small>顧客音声は利用できません。テキスト表示で会話できます。</small>}</div>
     <div className="messages" aria-live="polite">{messages.map((m) => <div key={m.id} className={`message ${m.speaker}`}><span>{m.speaker === "customer" ? "顧客" : "あなた"}</span><p>{m.text}</p></div>)}</div>
     {hintsOn && <div className="inline-hint">ヒント：確認できた内容だけを案内し、必要なら責任者へ引き継ぎましょう。</div>}
     <div className="action-bar"><button onClick={() => onAction("hold")}>Ⅱ 保留する</button><button onClick={() => onAction("check")}>✓ 確認する</button><button onClick={() => onAction("escalate")}>↗ 責任者へ引き継ぐ</button><button onClick={() => onAction("end")}>□ 応対を終了する</button></div>
-    <div className="composer"><textarea aria-label="受講者の回答" value={input} onChange={(e) => setInput(e.target.value)} placeholder="応対を入力してください…" onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); onAction("speak"); } }} /><button className="send" onClick={() => onAction("speak")} aria-label="送信">↑</button></div>
-    <div className="training-actions"><small>現在はテキスト練習です。会話入力は将来音声へ交換できます。</small><button className="quiet-button" onClick={onFinish} disabled={!messages.some((m) => m.speaker === "trainee")}>採点して終了</button></div>
+    <div className={`speech-input-state ${speech.status}`}><button className="talk-button" onClick={speech.status === "listening" ? speech.stopListening : speech.requestListening} disabled={speech.status === "recognizing"}>{speech.status === "listening" ? "■ 話し終わる" : "🎙 話す"}</button><div><strong>{speech.status === "listening" ? "聞いています…" : speech.status === "recognizing" ? "認識しています…" : speech.status === "confirm" ? "認識結果を確認" : speech.status === "error" ? "音声入力を利用できません" : "待機中"}</strong><small>{speech.message}</small></div></div>
+    {!speech.inputSupported && <p className="speech-fallback">このブラウザでは音声入力を利用できません。テキスト入力でトレーニングできます。</p>}
+    <div className="composer"><textarea aria-label="受講者の回答" value={input} onChange={(e) => setInput(e.target.value)} placeholder="音声認識結果を確認・修正、または応対を入力…" onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }} /><button className="send" onClick={send} aria-label="送信">↑</button></div>
+    <div className="training-actions"><small>音声またはテキストで練習できます。音声認識の利用可否と処理方式はブラウザ環境により異なります。</small><button className="quiet-button" onClick={onFinish} disabled={!messages.some((m) => m.speaker === "trainee")}>採点して終了</button></div>
+    {speech.showIntro && <div className="speech-intro-backdrop" role="dialog" aria-modal="true" aria-label="音声練習の説明"><section className="speech-intro"><p className="eyebrow">VOICE PRACTICE</p><h2>音声練習</h2><ol><li>「話す」を押す</li><li>マイクへ話す</li><li>認識された文章を確認</li><li>送信</li><li>顧客が音声で返答</li></ol><p>音声は保存しません。音声認識はブラウザやOSにより外部サービスで処理される場合があります。</p><div><button className="quiet-button" onClick={speech.dismissIntro}>今回はテキストで続ける</button><button className="primary" onClick={speech.acceptIntroAndListen}>音声練習を始める</button></div></section></div>}
   </div>;
 }
 
