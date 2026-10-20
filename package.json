@@ -29,6 +29,6 @@
     "globals": "latest",
     "jsdom": "^26.1.0",
     "typescript-eslint": "latest",
-    "vitest": "^3.2.4"
+    "vitest": "^5.0.5"
   }
 }
